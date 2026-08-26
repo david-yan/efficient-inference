@@ -72,9 +72,13 @@ kubectl get nodes
 
 ## Model Serving Deployment Guide
 
-### Step 1: Initialize Namespace & Service Accounts (One-time)
+### Step 1: Initialize Namespace, KEDA Operator & Secrets (One-time)
 ```bash
+# 1. Apply base namespace, KSA, and secrets
 kubectl apply -f k8s/00-namespace-and-sa.yaml
+
+# 2. Install KEDA operator and CRDs for scale-to-zero autoscaling
+kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.14.0/keda-2.14.0.yaml
 ```
 
 *(Optional: If deploying gated models like Gemma, inject your Hugging Face token:)*
