@@ -49,18 +49,18 @@ kubectl get nodes
 │       └── run_bench.sh        # Automated evaluation script
 └── k8s/
     ├── 00-namespace-and-sa.yaml # Namespace `inference`, KSA, and secrets
-    ├── 01-vllm-baseline.yaml    # Baseline standalone deployment
-    ├── 02-vllm-custom-lora.yaml # Custom LoRA serving deployment
-    ├── 03-keda-autoscaling.yaml # Scale-to-zero autoscaling rules
-    ├── base/                    # Base vLLM Deployment & Service
+    ├── base/                    # Base vLLM Deployment, Service, and KEDA ScaledObject
     │   ├── deployment.yaml
     │   ├── service.yaml
+    │   ├── scaledobject.yaml    # Auto-targets active model deployment
+    │   ├── kustomizeconfig.yaml # Dynamic nameReference resolution
     │   └── kustomization.yaml
-    ├── overlays/                # Model-specific overlays (Qwen, Gemma, DeepSeek)
-    │   ├── qwen-7b/
-    │   ├── gemma-9b/
-    │   ├── deepseek-r1-7b/
-    │   └── deepseek-r1-14b/
+    ├── overlays/                # Model-specific overlays
+    │   ├── qwen-7b/             # Qwen2.5-7B-Instruct (1x L4)
+    │   ├── gemma-9b/            # Gemma-2-9B-It (1x L4)
+    │   ├── deepseek-r1-7b/      # DeepSeek-R1-Distill-Qwen-7B (1x L4)
+    │   ├── deepseek-r1-14b/     # DeepSeek-R1-Distill-Qwen-14B (2x L4)
+    │   └── custom-lora/         # Custom LoRA adapter streamed via GCS FUSE
     └── jobs/                    # On-demand batch evaluation & training jobs
         └── benchmark-tau2.yaml  # tau2-bench evaluation job
 ```
@@ -85,7 +85,7 @@ kubectl create secret generic hf-secret \
 
 ### Step 2: Deploy a Model via Kustomize
 
-Deploy any model with a single command. The GKE Cluster Autoscaler will provision the required L4 GPU node on demand (~90s):
+Deploy any model with a single command. The GKE Cluster Autoscaler will provision the required L4 GPU node on demand (~90s), and KEDA will automatically attach a `ScaledObject` to scale down to 0 when idle:
 
 #### A. Qwen 2.5 7B Instruct (1x L4 GPU)
 ```bash
@@ -105,6 +105,11 @@ kubectl apply -k k8s/overlays/deepseek-r1-7b/
 #### D. DeepSeek R1 Distill Qwen 14B (2x L4 GPUs)
 ```bash
 kubectl apply -k k8s/overlays/deepseek-r1-14b/
+```
+
+#### E. Custom Fine-Tuned Model / LoRA (Streamed via GCS FUSE)
+```bash
+kubectl apply -k k8s/overlays/custom-lora/
 ```
 
 ---
