@@ -49,17 +49,20 @@ kubectl get nodes
 │       └── run_bench.sh        # Automated evaluation script
 └── k8s/
     ├── 00-namespace-and-sa.yaml # Namespace `inference`, KSA, and secrets
-    ├── 03-benchmark-tau2-job.yaml # K8s batch Job for tau2-bench
-    ├── 04-keda-autoscaling.yaml # Scale-to-zero rules
-    ├── base/                   # Base vLLM Deployment & Service
+    ├── 01-vllm-baseline.yaml    # Baseline standalone deployment
+    ├── 02-vllm-custom-lora.yaml # Custom LoRA serving deployment
+    ├── 03-keda-autoscaling.yaml # Scale-to-zero autoscaling rules
+    ├── base/                    # Base vLLM Deployment & Service
     │   ├── deployment.yaml
     │   ├── service.yaml
     │   └── kustomization.yaml
-    └── overlays/               # Model-specific overlays
-        ├── qwen-7b/            # Qwen2.5-7B-Instruct (1x L4)
-        ├── gemma-9b/           # Gemma-2-9B-It (1x L4)
-        ├── deepseek-r1-7b/     # DeepSeek-R1-Distill-Qwen-7B (1x L4)
-        └── deepseek-r1-14b/    # DeepSeek-R1-Distill-Qwen-14B (2x L4)
+    ├── overlays/                # Model-specific overlays (Qwen, Gemma, DeepSeek)
+    │   ├── qwen-7b/
+    │   ├── gemma-9b/
+    │   ├── deepseek-r1-7b/
+    │   └── deepseek-r1-14b/
+    └── jobs/                    # On-demand batch evaluation & training jobs
+        └── benchmark-tau2.yaml  # tau2-bench evaluation job
 ```
 
 ---
@@ -139,7 +142,7 @@ Execute in-cluster evaluation jobs that query the internal vLLM ClusterIP servic
 
 ### Run a Benchmark Job:
 ```bash
-kubectl apply -f k8s/03-benchmark-tau2-job.yaml
+kubectl apply -f k8s/jobs/benchmark-tau2.yaml
 ```
 
 ### Stream Benchmark Logs:
