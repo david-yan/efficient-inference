@@ -1,0 +1,21 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-baseline-scaler
+  namespace: inference
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vllm-baseline-qwen
+  minReplicaCount: 0
+  maxReplicaCount: 2
+  cooldownPeriod: 600 # Wait 10 minutes of zero traffic before scaling down to 0
+  pollingInterval: 15
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      metricName: vllm_num_requests_waiting
+      query: sum(vllm:num_requests_waiting{namespace="inference"}) or vector(0)
+      threshold: '1'

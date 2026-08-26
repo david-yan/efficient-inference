@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-custom-qwen
+  namespace: inference
+  labels:
+    app: vllm-custom
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-custom
+  template:
+    metadata:
+      labels:
+        app: vllm-custom
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      serviceAccountName: inference-ksa
+      tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Equal"
+        value: "present"
+        effect: "NoSchedule"
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-l4
+      containers:
+      - name: vllm
+        image: gcr.io/efficient-inference-506713/vllm-custom:latest
+        env:
+        - name: MODEL_PATH
+          value: "Qwen/Qwen2.5-7B-Instruct"
+        - name: SERVED_MODEL_NAME
+          value: "qwen-custom-dpo"
+        - name: LORA_MODULES
+          value: "dpo_adapter=/mnt/gcs/adapters/qwen-7b-dpo-v1"
+        - name: MAX_MODEL_LEN
+          value: "8192"
+        - name: GPU_MEMORY_UTILIZATION
+          value: "0.90"
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-secret
+              key: token
+              optional: true
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "3500m"
+            memory: "14Gi"
+          requests:
+            nvidia.com/gpu: "1"
+            cpu: "2000m"
+            memory: "10Gi"
+        volumeMounts:
+        - name: gcs-storage
+          mountPath: /mnt/gcs
+          readOnly: true
+        - name: dshm
+          mountPath: /dev/shm
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 90
+          periodSeconds: 15
+      volumes:
+      - name: gcs-storage
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: efficient-inference-506713-models
+            mountOptions: "implicit-dirs,file-cache:max-size-mb:20480"
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-custom-service
+  namespace: inference
+  labels:
+    app: vllm-custom
+spec:
+  selector:
+    app: vllm-custom
+  ports:
+  - protocol: TCP
+    port: 8000
+    targetPort: 8000
+    name: http
+  type: ClusterIP

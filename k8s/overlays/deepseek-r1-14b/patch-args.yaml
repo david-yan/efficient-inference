@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-server
+spec:
+  template:
+    spec:
+      containers:
+      - name: vllm
+        args:
+        - "--model=deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+        - "--served-model-name=deepseek-r1-14b"
+        - "--tensor-parallel-size=2"
+        - "--max-model-len=8192"
+        - "--gpu-memory-utilization=0.90"
+        - "--dtype=bfloat16"
+        resources:
+          limits:
+            nvidia.com/gpu: "2"
+          requests:
+            nvidia.com/gpu: "2"

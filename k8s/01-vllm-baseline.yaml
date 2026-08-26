@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-baseline-qwen
+  namespace: inference
+  labels:
+    app: vllm-baseline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-baseline
+  template:
+    metadata:
+      labels:
+        app: vllm-baseline
+    spec:
+      serviceAccountName: inference-ksa
+      tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Equal"
+        value: "present"
+        effect: "NoSchedule"
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-l4
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:v0.6.2
+        args:
+        - "--model=Qwen/Qwen2.5-7B-Instruct"
+        - "--served-model-name=qwen-baseline"
+        - "--tensor-parallel-size=1"
+        - "--max-model-len=8192"
+        - "--gpu-memory-utilization=0.90"
+        - "--dtype=bfloat16"
+        env:
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-secret
+              key: token
+              optional: true
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "3500m"
+            memory: "14Gi"
+          requests:
+            nvidia.com/gpu: "1"
+            cpu: "2000m"
+            memory: "10Gi"
+        volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 90
+          periodSeconds: 15
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-baseline-service
+  namespace: inference
+  labels:
+    app: vllm-baseline
+spec:
+  selector:
+    app: vllm-baseline
+  ports:
+  - protocol: TCP
+    port: 8000
+    targetPort: 8000
+    name: http
+  type: ClusterIP

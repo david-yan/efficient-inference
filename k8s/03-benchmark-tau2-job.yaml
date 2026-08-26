@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tau2-bench-run-qwen7b
+  namespace: inference
+  labels:
+    app: tau2-bench-runner
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: tau2-bench-runner
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      serviceAccountName: inference-ksa
+      restartPolicy: Never
+      tolerations:
+      - key: "cloud.google.com/gke-spot"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      containers:
+      - name: tau2-runner
+        image: gcr.io/efficient-inference-506713/tau2-bench-runner:latest
+        env:
+        - name: OPENAI_API_BASE
+          value: "http://vllm-baseline-service:8000/v1"
+        - name: OPENAI_API_KEY
+          value: "EMPTY"
+        - name: MODEL_NAME
+          value: "qwen-baseline"
+        - name: DOMAIN
+          value: "airline"
+        - name: OUTPUT_DIR
+          value: "/mnt/gcs/benchmarks/tau2-bench/qwen7b-airline-run1"
+        - name: MAX_CONCURRENCY
+          value: "8"
+        resources:
+          limits:
+            cpu: "2000m"
+            memory: "6Gi"
+          requests:
+            cpu: "1000m"
+            memory: "4Gi"
+        volumeMounts:
+        - name: gcs-storage
+          mountPath: /mnt/gcs
+      volumes:
+      - name: gcs-storage
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: efficient-inference-506713-models
+            mountOptions: "implicit-dirs"

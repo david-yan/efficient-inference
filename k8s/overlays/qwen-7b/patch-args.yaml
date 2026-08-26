@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-server
+spec:
+  template:
+    spec:
+      containers:
+      - name: vllm
+        args:
+        - "--model=Qwen/Qwen2.5-7B-Instruct"
+        - "--served-model-name=qwen-7b"
+        - "--tensor-parallel-size=1"
+        - "--max-model-len=8192"
+        - "--gpu-memory-utilization=0.90"
+        - "--dtype=bfloat16"
