@@ -58,6 +58,9 @@ kubectl get nodes
     ├── overlays/                # Model-specific overlays
     │   ├── qwen-7b/             # Qwen2.5-7B-Instruct (1x L4)
     │   ├── gemma-9b/            # Gemma-2-9B-It (1x L4)
+    │   ├── gemma-3-1b/          # Gemma-3-1B-It (1x L4)
+    │   ├── gemma-3-4b/          # Gemma-3-4B-It (1x L4)
+    │   ├── gemma-3-12b-fp8/     # Gemma-3-12B-It FP8 Quantized (1x L4)
     │   ├── deepseek-r1-7b/      # DeepSeek-R1-Distill-Qwen-7B (1x L4)
     │   ├── deepseek-r1-14b/     # DeepSeek-R1-Distill-Qwen-14B (2x L4)
     │   └── custom-lora/         # Custom LoRA adapter streamed via GCS FUSE
@@ -74,7 +77,7 @@ kubectl get nodes
 kubectl apply -f k8s/00-namespace-and-sa.yaml
 ```
 
-*(Optional: If deploying gated models like Gemma 2, inject your Hugging Face token:)*
+*(Optional: If deploying gated models like Gemma, inject your Hugging Face token:)*
 ```bash
 kubectl create secret generic hf-secret \
   --from-literal=token="hf_YOUR_TOKEN" \
@@ -87,14 +90,21 @@ kubectl create secret generic hf-secret \
 
 Deploy any model with a single command. The GKE Cluster Autoscaler will provision the required L4 GPU node on demand (~90s), and KEDA will automatically attach a `ScaledObject` to scale down to 0 when idle:
 
-#### A. Qwen 2.5 7B Instruct (1x L4 GPU)
+#### A. Gemma 3 Models (1x L4 GPU)
 ```bash
-kubectl apply -k k8s/overlays/qwen-7b/
+# Gemma 3 1B:
+kubectl apply -k k8s/overlays/gemma-3-1b/
+
+# Gemma 3 4B:
+kubectl apply -k k8s/overlays/gemma-3-4b/
+
+# Gemma 3 12B FP8 (Quantized):
+kubectl apply -k k8s/overlays/gemma-3-12b-fp8/
 ```
 
-#### B. Gemma 2 9B Instruct (1x L4 GPU)
+#### B. Qwen 2.5 7B Instruct (1x L4 GPU)
 ```bash
-kubectl apply -k k8s/overlays/gemma-9b/
+kubectl apply -k k8s/overlays/qwen-7b/
 ```
 
 #### C. DeepSeek R1 Distill Qwen 7B (1x L4 GPU)

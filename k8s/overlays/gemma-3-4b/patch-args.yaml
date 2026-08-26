@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-server
+spec:
+  template:
+    spec:
+      containers:
+      - name: vllm
+        args:
+        - "--model=google/gemma-3-4b-it"
+        - "--served-model-name=gemma-3-4b"
+        - "--tensor-parallel-size=1"
+        - "--max-model-len=8192"
+        - "--gpu-memory-utilization=0.90"
+        - "--dtype=bfloat16"
