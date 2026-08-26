@@ -57,7 +57,7 @@ kubectl get nodes
     │   └── kustomization.yaml
     ├── overlays/                # Model-specific overlays
     │   ├── qwen-7b/             # Qwen2.5-7B-Instruct (1x L4)
-    │   ├── gemma-9b/            # Gemma-2-9B-It (1x L4)
+    │   ├── gemma-2-9b/          # Gemma-2-9B-It (1x L4)
     │   ├── gemma-3-1b/          # Gemma-3-1B-It (1x L4)
     │   ├── gemma-3-4b/          # Gemma-3-4B-It (1x L4)
     │   ├── gemma-3-12b-fp8/     # Gemma-3-12B-It FP8 Quantized (1x L4)
