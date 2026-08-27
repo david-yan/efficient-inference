@@ -9,8 +9,11 @@ spec:
     name: vllm-server
   minReplicaCount: 0
   maxReplicaCount: 2
-  cooldownPeriod: 600 # 10 minutes of idle traffic before scaling down to 0
+  cooldownPeriod: 3600 # 1 hour (3600 seconds) of inactivity before scaling down to 0
   pollingInterval: 15
+  fallback:
+    failureThreshold: 3
+    replicas: 1
   triggers:
   - type: prometheus
     metadata:
@@ -18,4 +21,4 @@ spec:
       metricName: vllm_num_requests_waiting
       query: sum(vllm_num_requests_waiting)
       threshold: '1'
-      ignoreNullValues: "true"
+      ignoreNullValues: "false"
