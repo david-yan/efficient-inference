@@ -6,7 +6,7 @@ Supports:
       (1) 'random_sample': Uniform random sampling across dataset (low prefix sharing)
       (2) 'random_slice': Contiguous window from prefix-sorted dataset (high prefix sharing)
   - Full academic datasets (GSM8K, MMLU, Combined)
-  - Incremental execution & resume (avoids re-running previously completed tiers)
+  - Inter-tier cache isolation without intra-tier prefix destruction
   - Real-time Prometheus telemetry & dynamic concurrency scaling
 """
 
@@ -54,12 +54,113 @@ WORKLOAD_PRESETS = {
 
 DEFAULT_DATASET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datasets")
 
+# Standard 8-shot Chain-of-Thought exemplars for GSM8K (Wei et al. / OpenAI Grade School Math)
+GSM8K_8SHOT_COT = """The following are math word problems with step-by-step reasoning solutions.
 
-def load_dataset_prompts(dataset_name_or_path: str) -> List[Dict[str, Any]]:
+Problem: There are 15 trees in the grove. Grove workers will plant trees in the grove today. After they are done, there will be 21 trees. How many trees did the grove workers plant today?
+Solution: There are 15 trees originally. Then there were 21 trees after some more were planted. So there must have been 21 - 15 = 6 trees planted. The answer is 6.
+
+Problem: If there are 3 cars in the parking lot and 2 more cars arrive, how many cars are in the parking lot?
+Solution: There are originally 3 cars. 2 more cars arrive. 3 + 2 = 5. The answer is 5.
+
+Problem: Leah had 32 chocolates and her sister had 42. If they ate 35, how many pieces do they have left in total?
+Solution: Originally, Leah had 32 chocolates. Her sister had 42. So in total they had 32 + 42 = 74. After eating 35, they had 74 - 35 = 39. The answer is 39.
+
+Problem: Jason had 20 lollipops. He gave Denny some lollipops. Now Jason has 12 lollipops. How many lollipops did Jason give to Denny?
+Solution: Jason started with 20 lollipops. Then he had 12 after giving some to Denny. So he gave Denny 20 - 12 = 8 lollipops. The answer is 8.
+
+Problem: Shawn has five toys. For Christmas, he got two toys each from his mom and dad. How many toys does he have now?
+Solution: Shawn started with 5 toys. If he got 2 toys each from his mom and dad, then he got 2 + 2 = 4 toys. 5 + 4 = 9 toys. The answer is 9.
+
+Problem: There were nine computers in the server room. Five more computers were installed each day, from monday to thursday. How many computers are now in the server room?
+Solution: There were originally 9 computers. For each of 4 days, 5 more computers were added. So 5 * 4 = 20 computers were added. 9 + 20 is 29. The answer is 29.
+
+Problem: Michael had 58 golf balls. On tuesday, he lost 23 golf balls. On wednesday, he lost 2 more. How many golf balls did he have at the end of wednesday?
+Solution: Michael started with 58 golf balls. After losing 23 on tuesday, he had 58 - 23 = 35. After losing 2 more, he had 35 - 2 = 33 golf balls. The answer is 33.
+
+Problem: Olivia has $23. She bought five bagels for $3 each. How much money does she have left?
+Solution: Olivia had 23 dollars. 5 bagels for 3 dollars each will be 5 x 3 = 15 dollars. So she has 23 - 15 dollars left. 23 - 15 is 8. The answer is 8.
+
+"""
+
+# Standard 5-shot exemplars for MMLU multiple choice
+MMLU_5SHOT_PREFIX = """Question: What is the primary function of mitochondria in eukaryotic cells?
+A. Photosynthesis
+B. ATP cellular respiration
+C. Protein packaging
+D. Lipid degradation
+Answer: B
+
+Question: If f(x) = 3x^2 - 4x + 1, what is f'(2)?
+A. 8
+B. 12
+C. 10
+D. 6
+Answer: A
+
+Question: Which treaty ended the Thirty Years' War in 1648?
+A. Treaty of Utrecht
+B. Peace of Westphalia
+C. Treaty of Versailles
+D. Treaty of Ghent
+Answer: B
+
+Question: What is the time complexity of searching in a balanced binary search tree with N elements?
+A. O(1)
+B. O(N)
+C. O(log N)
+D. O(N log N)
+Answer: C
+
+Question: Which component of a CPU directs the operation of the processor?
+A. ALU
+B. Control Unit
+C. Register File
+D. Cache
+Answer: B
+
+"""
+
+
+def format_prompt(sample: Dict[str, Any], prompt_mode: str = "zero_shot", tier_salt: str = "") -> str:
+    """Formats the prompt dynamically according to prompt_mode ('zero_shot' vs 'few_shot')."""
+    raw_prompt = sample.get("prompt", "")
+    prefix_str = f"[TierSalt: {tier_salt}] " if tier_salt else ""
+
+    if prompt_mode in ("few_shot", "cot"):
+        dataset_type = sample.get("dataset", "").lower()
+        if "gsm8k" in dataset_type:
+            question = sample.get("question")
+            if not question and "Question: " in raw_prompt:
+                q_part = raw_prompt.split("Question: ", 1)[-1]
+                question = q_part.split("\nLet's think step by step.", 1)[0]
+            if question:
+                return f"{prefix_str}{GSM8K_8SHOT_COT}Problem: {question}\nSolution: Let's think step by step."
+            return f"{prefix_str}{GSM8K_8SHOT_COT}{raw_prompt}"
+        elif "mmlu" in dataset_type:
+            subject = sample.get("subject", "")
+            subject_name = subject.replace("_", " ") if subject else ""
+            if subject_name:
+                header = f"The following are multiple choice questions (with answers) about {subject_name}.\n\n"
+            else:
+                header = ""
+            core_prompt = raw_prompt.replace(header, "") if header and raw_prompt.startswith(header) else raw_prompt
+            return f"{prefix_str}{header}{MMLU_5SHOT_PREFIX}{core_prompt}"
+        else:
+            return f"{prefix_str}System: You are an expert AI assistant solving academic evaluation questions with rigorous reasoning.\n\n{raw_prompt}"
+
+    return f"{prefix_str}{raw_prompt}"
+
+
+
+def load_dataset_prompts(dataset_name_or_path: str, strategy: str = "random_sample") -> List[Dict[str, Any]]:
     """Loads benchmark prompts from a JSONL file or built-in dataset directory."""
     path = dataset_name_or_path
     if not os.path.exists(path):
+        subfolder = "sorted" if strategy == "random_slice" else "raw"
+        suffix = "_sorted.jsonl" if strategy == "random_slice" else ".jsonl"
         candidates = [
+            os.path.join(DEFAULT_DATASET_DIR, subfolder, f"{dataset_name_or_path}{suffix}"),
             os.path.join(DEFAULT_DATASET_DIR, "sorted", f"{dataset_name_or_path}_sorted.jsonl"),
             os.path.join(DEFAULT_DATASET_DIR, "raw", f"{dataset_name_or_path}.jsonl"),
             os.path.join(DEFAULT_DATASET_DIR, f"{dataset_name_or_path}.jsonl"),
@@ -111,13 +212,13 @@ def select_tier_samples(
 
 def generate_prompt(input_len: int, shared_prefix: str = "", req_idx: int = 0, tier_salt: str = "") -> str:
     """Generates a synthetic prompt matching the requested token length."""
-    salt_header = f"[Session: {tier_salt}-{req_idx}] " if tier_salt else ""
-    base_text = f"Sample item {req_idx}: The quick brown fox jumps over the lazy dog. Artificial intelligence inference optimization on GPUs. "
+    salt_header = f"[Session: {tier_salt}] " if tier_salt else ""
+    base_text = f"The quick brown fox jumps over the lazy dog. Artificial intelligence inference optimization on GPUs. "
     multiplier = max(1, (input_len * 4) // len(base_text))
     body = (base_text * multiplier)[: input_len * 4]
     if shared_prefix:
-        return f"{salt_header}{shared_prefix}\n\nTask: Analyze the text and generate a concise response.\n\nContext:\n{body}"
-    return f"{salt_header}Task: Analyze the text and generate a concise response.\n\nContext:\n{body}"
+        return f"{salt_header}{shared_prefix}\n\nTask: Analyze text item {req_idx}.\n\nContext:\n{body}"
+    return f"{salt_header}Task: Analyze text item {req_idx}.\n\nContext:\n{body}"
 
 
 async def fetch_vllm_metrics(session: aiohttp.ClientSession, base_url: str) -> Dict[str, float]:
@@ -222,6 +323,7 @@ async def run_concurrency_tier(
     shared_prefix: str = "",
     multi_turn: int = 1,
     tier_salt: str = "",
+    prompt_mode: str = "zero_shot",
 ) -> Dict[str, Any]:
     """Executes a load tier with fixed concurrency and selected samples."""
     semaphore = asyncio.Semaphore(concurrency)
@@ -237,8 +339,7 @@ async def run_concurrency_tier(
             async with semaphore:
                 results = []
                 sample = samples[idx]
-                prefix_str = f"[TierSalt: {tier_salt}-{idx}] " if tier_salt else ""
-                current_prompt = f"{prefix_str}{sample['prompt']}"
+                current_prompt = format_prompt(sample, prompt_mode=prompt_mode, tier_salt=tier_salt)
                 current_output_len = sample.get("expected_max_tokens", output_len)
 
                 for turn in range(multi_turn):
@@ -296,12 +397,13 @@ async def run_concurrency_tier(
     }
 
 
-def print_summary_table(results: List[Dict[str, Any]], profile_name: str, model_name: str, dataset_name: Optional[str] = None, strategy: str = "random_sample"):
+def print_summary_table(results: List[Dict[str, Any]], profile_name: str, model_name: str, dataset_name: Optional[str] = None, strategy: str = "random_sample", prompt_mode: str = "zero_shot"):
     """Prints a formatted ASCII table of the benchmark sweep."""
     ds_str = f" | Dataset: {dataset_name}" if dataset_name else ""
+    pm_str = f" | Mode: {prompt_mode}"
     header = (
         f"\n===================================================================================================================\n"
-        f" CAPACITY BENCHMARK REPORT: {model_name} (Profile: {profile_name}{ds_str} | Strategy: {strategy})\n"
+        f" CAPACITY BENCHMARK REPORT: {model_name} (Profile: {profile_name}{ds_str}{pm_str} | Strategy: {strategy})\n"
         f"===================================================================================================================\n"
         f" Concurrency | Requests | Tok/s     | Req/s  | TTFT P50 (ms) | TPOT P50 (ms) | Lat P95 (s) | Peak KV % | Prefix % | Wait\n"
         f"-------------+----------+-----------+--------+---------------+---------------+-------------+-----------+----------+------"
@@ -329,24 +431,24 @@ async def run_benchmark_suite(
     profile: str,
     dataset: Optional[str] = None,
     strategy: str = "random_sample",
+    prompt_mode: str = "zero_shot",
     concurrency_tiers: Optional[List[int]] = None,
     requests_per_tier: Optional[int] = None,
     multiplier: int = 2,
     isolate_cache: bool = True,
-    resume: bool = True,
+    resume: bool = False,
     output_json: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Runs a complete capacity benchmark suite with incremental resume support."""
     cfg = WORKLOAD_PRESETS.get(profile, WORKLOAD_PRESETS["batch"]).copy()
     all_tiers = sorted(concurrency_tiers or cfg["concurrency_tiers"])
 
-    # Load dataset
+    # Load dataset based on strategy
     if dataset:
-        all_samples = load_dataset_prompts(dataset)
+        all_samples = load_dataset_prompts(dataset, strategy=strategy)
     else:
         all_samples = [{"prompt": generate_prompt(cfg["input_len"], "", i), "expected_max_tokens": cfg["output_len"]} for i in range(1000)]
 
-    # Check for existing completed results if resume is enabled
     completed_tier_map: Dict[int, Dict[str, Any]] = {}
     if resume and output_json and os.path.exists(output_json):
         try:
@@ -362,7 +464,7 @@ async def run_benchmark_suite(
     tiers_to_run = [c for c in all_tiers if c not in completed_tier_map]
 
     print(f"\n=======================================================")
-    print(f"Capacity Suite: {dataset or 'Synthetic'} [{strategy.upper()}]")
+    print(f"Capacity Suite: {dataset or 'Synthetic'} [{strategy.upper()}] (Mode: {prompt_mode})")
     print(f"Endpoint: {url} | Model: {model}")
     print(f"Tiers Target: {all_tiers} | Pending Tiers: {tiers_to_run}")
     print(f"=======================================================")
@@ -372,7 +474,7 @@ async def run_benchmark_suite(
         selected_samples = select_tier_samples(all_samples, req_count, strategy=strategy, seed=c + 42)
         tier_salt = f"tier-c{c}-{uuid.uuid4().hex[:6]}" if isolate_cache else ""
 
-        print(f"--> Tier {c}: Dispatching {req_count} requests [{strategy}] (Salt: {tier_salt or 'None'})...")
+        print(f"--> Tier {c}: Dispatching {req_count} requests [{strategy} | {prompt_mode}] (Salt: {tier_salt or 'None'})...")
         res = await run_concurrency_tier(
             base_url=url,
             model=model,
@@ -383,11 +485,11 @@ async def run_benchmark_suite(
             shared_prefix="",
             multi_turn=cfg.get("multi_turn", 1),
             tier_salt=tier_salt,
+            prompt_mode=prompt_mode,
         )
         completed_tier_map[c] = res
         print(f"    Done: {res['completed']}/{res['total_requests']} | Tok/s: {res['throughput_tokens_per_sec']} | TTFT: {res['ttft_p50_ms']}ms | Peak KV: {res['peak_kv_cache_perc']}% | Prefix: {res['prefix_hit_rate_perc']}%")
 
-        # Incrementally persist output
         if output_json:
             sorted_res = [completed_tier_map[k] for k in sorted(completed_tier_map.keys())]
             report_data = {
@@ -397,6 +499,7 @@ async def run_benchmark_suite(
                 "profile": profile,
                 "dataset": dataset,
                 "strategy": strategy,
+                "prompt_mode": prompt_mode,
                 "total_requests": sum(r["total_requests"] for r in sorted_res),
                 "cache_isolated": isolate_cache,
                 "results": sorted_res,
@@ -406,7 +509,7 @@ async def run_benchmark_suite(
                 json.dump(report_data, f, indent=2)
 
     final_results = [completed_tier_map[k] for k in sorted(completed_tier_map.keys())]
-    print_summary_table(final_results, profile, model, dataset, strategy)
+    print_summary_table(final_results, profile, model, dataset, strategy, prompt_mode=prompt_mode)
 
     return {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -415,6 +518,7 @@ async def run_benchmark_suite(
         "profile": profile,
         "dataset": dataset,
         "strategy": strategy,
+        "prompt_mode": prompt_mode,
         "total_requests": sum(r["total_requests"] for r in final_results),
         "cache_isolated": isolate_cache,
         "results": final_results,
@@ -428,11 +532,12 @@ async def main_async():
     parser.add_argument("--profile", choices=["batch", "agent", "interactive", "custom"], default="batch")
     parser.add_argument("--dataset", default=None, help="Dataset name ('gsm8k', 'mmlu', 'combined') or JSONL path")
     parser.add_argument("--strategy", choices=["random_sample", "random_slice", "sequential"], default="random_sample")
+    parser.add_argument("--prompt-mode", choices=["zero_shot", "few_shot", "cot"], default="zero_shot", help="Prompt formatting mode")
     parser.add_argument("--concurrency-tiers", nargs="+", type=int, default=None)
     parser.add_argument("--requests-per-tier", type=int, default=None)
     parser.add_argument("--concurrency-multiplier", type=int, default=2)
     parser.add_argument("--no-isolate-cache", action="store_true")
-    parser.add_argument("--no-resume", action="store_true", help="Force re-running completed tiers")
+    parser.add_argument("--resume", action="store_true", help="Enable incremental resume")
     parser.add_argument("--output-json", default=None)
 
     args = parser.parse_args()
@@ -443,11 +548,12 @@ async def main_async():
         profile=args.profile,
         dataset=args.dataset,
         strategy=args.strategy,
+        prompt_mode=args.prompt_mode,
         concurrency_tiers=args.concurrency_tiers,
         requests_per_tier=args.requests_per_tier,
         multiplier=args.concurrency_multiplier,
         isolate_cache=not args.no_isolate_cache,
-        resume=not args.no_resume,
+        resume=args.resume,
         output_json=args.output_json,
     )
 

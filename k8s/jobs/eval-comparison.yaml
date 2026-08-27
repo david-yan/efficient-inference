@@ -36,6 +36,8 @@ spec:
           value: "1 4 8 16 32 64 96 128 192 256"
         - name: DATASETS
           value: "gsm8k mmlu combined"
+        - name: PROMPT_MODE
+          value: "zero_shot"
         - name: CONCURRENCY_MULTIPLIER
           value: "2"
         command: ["/bin/bash", "-c"]
@@ -48,6 +50,7 @@ spec:
           echo "Model Name        : ${MODEL_NAME}"
           echo "Concurrency Tiers : ${CONCURRENCY_TIERS}"
           echo "Datasets          : ${DATASETS}"
+          echo "Prompt Mode       : ${PROMPT_MODE}"
           echo "GCS Output Dir    : ${GCS_OUTPUT_DIR}"
           echo "=================================================="
           
@@ -68,6 +71,7 @@ spec:
             --model "${MODEL_NAME}" \
             --tiers ${CONCURRENCY_TIERS} \
             --datasets ${DATASETS} \
+            --prompt-mode "${PROMPT_MODE}" \
             --multiplier ${CONCURRENCY_MULTIPLIER} \
             --output-dir "${GCS_OUTPUT_DIR}"
           

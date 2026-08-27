@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 Datasets Pipeline for LLM Capacity Testing & Evaluation
-1. Pulls authentic academic benchmark datasets (GSM8K, MMLU)
-2. Sorts datasets by (longest shared prefix / lexicographical, shortest length)
-3. Outputs raw and sorted JSONL files locally and to Cloud Storage (GCS).
+Pulls pure, authentic academic benchmark datasets (GSM8K, MMLU) in clean raw format.
+Few-shot CoT prefixes are dynamically prepended at runtime via benchmark_capacity.py.
 """
 
 import argparse
@@ -18,7 +17,7 @@ MMLU_HF_API = "https://datasets-server.huggingface.co/rows?dataset=cais%2Fmmlu&c
 
 
 def pull_gsm8k() -> List[Dict[str, Any]]:
-    """Pulls full authentic GSM8K test dataset."""
+    """Pulls full authentic GSM8K test dataset in clean zero-shot format."""
     print("Downloading full GSM8K test dataset from OpenAI repository...")
     req = urllib.request.Request(GSM8K_TEST_URL, headers={"User-Agent": "Mozilla/5.0"})
     samples = []
@@ -28,20 +27,22 @@ def pull_gsm8k() -> List[Dict[str, Any]]:
             if not line:
                 continue
             item = json.loads(line)
-            prompt = f"Question: {item['question']}\nLet's think step by step."
+            question = item["question"]
+            prompt = f"Question: {question}\nLet's think step by step."
             samples.append({
                 "id": f"gsm8k-{idx:04d}",
                 "dataset": "gsm8k",
+                "question": question,
                 "prompt": prompt,
                 "expected_max_tokens": 256,
                 "reference_answer": item.get("answer", ""),
             })
-    print(f"Loaded {len(samples)} GSM8K test samples.")
+    print(f"Loaded {len(samples)} clean GSM8K test samples.")
     return samples
 
 
 def pull_mmlu(max_samples: int = 1500) -> List[Dict[str, Any]]:
-    """Pulls authentic MMLU test samples across multiple subjects via HuggingFace API."""
+    """Pulls authentic MMLU test samples in clean zero-shot format."""
     print("Downloading MMLU test dataset from Hugging Face cais/mmlu...")
     samples = []
     offset = 0
@@ -57,20 +58,22 @@ def pull_mmlu(max_samples: int = 1500) -> List[Dict[str, Any]]:
                     break
                 for row_data in rows:
                     row = row_data.get("row", {})
-                    subject = row.get("subject", "general_knowledge").replace("_", " ")
+                    raw_subject = row.get("subject", "general")
+                    subject_name = raw_subject.replace("_", " ")
                     question = row.get("question", "")
                     choices = row.get("choices", [])
                     choices_str = "\n".join([f"{chr(65+i)}. {c}" for i, c in enumerate(choices)])
                     prompt = (
-                        f"The following are multiple choice questions (with answers) about {subject}.\n\n"
-                        f"{question}\n"
+                        f"The following are multiple choice questions (with answers) about {subject_name}.\n\n"
+                        f"Question: {question}\n"
                         f"{choices_str}\n"
                         f"Answer:"
                     )
                     samples.append({
                         "id": f"mmlu-{len(samples):04d}",
                         "dataset": "mmlu",
-                        "subject": subject,
+                        "subject": raw_subject,
+                        "question": question,
                         "prompt": prompt,
                         "expected_max_tokens": 16,
                         "reference_answer": row.get("answer", ""),
@@ -81,17 +84,13 @@ def pull_mmlu(max_samples: int = 1500) -> List[Dict[str, Any]]:
         except Exception as e:
             print(f"Warning during MMLU download at offset {offset}: {e}")
             break
-    print(f"Loaded {len(samples)} MMLU test samples.")
+    print(f"Loaded {len(samples)} clean MMLU test samples.")
     return samples
 
 
 def sort_samples(samples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Sorts samples based on:
-    1. Longest shared prefix (lexicographical sort clusters identical prompts & subjects together)
-    2. Shortest prompt length (as secondary key)
-    """
-    return sorted(samples, key=lambda x: (x["prompt"], len(x["prompt"])))
+    """Sorts samples by prompt prefix and length."""
+    return sorted(samples, key=lambda x: (x.get("subject", x["dataset"]), len(x["prompt"])))
 
 
 def save_jsonl(samples: List[Dict[str, Any]], filepath: str):
@@ -104,14 +103,14 @@ def save_jsonl(samples: List[Dict[str, Any]], filepath: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dataset Ingestion and Prefix Sorting Pipeline")
-    parser.add_argument("--output-dir", default="benchmarks/capacity/datasets", help="Local/GCS output directory")
+    parser = argparse.ArgumentParser(description="Dataset Ingestion and Sorting Pipeline")
+    parser.add_argument("--output-dir", default="benchmarks/capacity/datasets", help="Output directory")
     args = parser.parse_args()
 
     raw_dir = os.path.join(args.output_dir, "raw")
     sorted_dir = os.path.join(args.output_dir, "sorted")
 
-    # 1. Pull Datasets
+    # 1. Pull Clean Datasets
     gsm8k_samples = pull_gsm8k()
     mmlu_samples = pull_mmlu(max_samples=1500)
     combined_samples = gsm8k_samples + mmlu_samples
@@ -121,7 +120,7 @@ def main():
     save_jsonl(mmlu_samples, os.path.join(raw_dir, "mmlu.jsonl"))
     save_jsonl(combined_samples, os.path.join(raw_dir, "combined.jsonl"))
 
-    # 3. Sort Datasets
+    # 3. Save Sorted Datasets
     gsm8k_sorted = sort_samples(gsm8k_samples)
     mmlu_sorted = sort_samples(mmlu_samples)
     combined_sorted = sort_samples(combined_samples)
@@ -130,7 +129,7 @@ def main():
     save_jsonl(mmlu_sorted, os.path.join(sorted_dir, "mmlu_sorted.jsonl"))
     save_jsonl(combined_sorted, os.path.join(sorted_dir, "combined_sorted.jsonl"))
 
-    print("\nDataset preparation completed successfully!")
+    print("\nDataset preparation completed successfully with clean raw samples!")
 
 
 if __name__ == "__main__":

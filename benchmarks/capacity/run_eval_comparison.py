@@ -2,7 +2,7 @@
 """
 Automated Evaluation Comparison Suite for vLLM Serving Capacity
 Runs comparative analysis across (1) Random Sample vs. (2) Random Slice.
-Supports incremental resume (skips previously completed concurrency tiers).
+Accurately measures true prefix caching acceleration and throughput curves.
 """
 
 import argparse
@@ -54,7 +54,6 @@ def format_comparative_table(results_a: Dict[str, Any], results_b: Dict[str, Any
 
 
 async def main_async():
-    # Environment variable fallbacks for Kubernetes Job flexibility
     env_tiers = os.getenv("CONCURRENCY_TIERS")
     default_tiers = [int(x) for x in env_tiers.split()] if env_tiers else [1, 4, 8, 16, 32, 64, 96, 128, 192, 256]
 
@@ -66,9 +65,10 @@ async def main_async():
     parser.add_argument("--model", default=os.getenv("MODEL_NAME", "gemma-3-4b"), help="Model Name")
     parser.add_argument("--tiers", nargs="+", type=int, default=default_tiers)
     parser.add_argument("--datasets", nargs="+", type=str, default=default_datasets)
+    parser.add_argument("--prompt-mode", choices=["zero_shot", "few_shot", "cot"], default=os.getenv("PROMPT_MODE", "zero_shot"), help="Prompt formatting mode (zero_shot or few_shot)")
     parser.add_argument("--multiplier", type=int, default=int(os.getenv("CONCURRENCY_MULTIPLIER", "2")))
     parser.add_argument("--output-dir", default=os.getenv("GCS_OUTPUT_DIR", "benchmarks/capacity/results"))
-    parser.add_argument("--no-resume", action="store_true", help="Force re-running existing tiers")
+    parser.add_argument("--resume", action="store_true", default=False)
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -84,10 +84,10 @@ async def main_async():
     for dataset_key in args.datasets:
         dataset_label = dataset_labels.get(dataset_key, dataset_key.upper())
         print(f"\n#####################################################################")
-        print(f" EVALUATION: {dataset_label} (Tiers: {args.tiers})")
+        print(f" EVALUATION: {dataset_label} (Tiers: {args.tiers} | Mode: {args.prompt_mode})")
         print(f"#####################################################################")
 
-        # 1. Run Random Sample (Incremental resume enabled)
+        # 1. Run Random Sample
         out_json_sample = os.path.join(args.output_dir, f"{dataset_key}_random_sample.json")
         res_sample = await run_benchmark_suite(
             url=args.url,
@@ -95,14 +95,15 @@ async def main_async():
             profile="batch",
             dataset=dataset_key,
             strategy="random_sample",
+            prompt_mode=args.prompt_mode,
             concurrency_tiers=args.tiers,
             multiplier=args.multiplier,
             isolate_cache=True,
-            resume=not args.no_resume,
+            resume=args.resume,
             output_json=out_json_sample,
         )
 
-        # 2. Run Random Slice (Incremental resume enabled)
+        # 2. Run Random Slice
         out_json_slice = os.path.join(args.output_dir, f"{dataset_key}_random_slice.json")
         res_slice = await run_benchmark_suite(
             url=args.url,
@@ -110,10 +111,11 @@ async def main_async():
             profile="batch",
             dataset=dataset_key,
             strategy="random_slice",
+            prompt_mode=args.prompt_mode,
             concurrency_tiers=args.tiers,
             multiplier=args.multiplier,
             isolate_cache=True,
-            resume=not args.no_resume,
+            resume=args.resume,
             output_json=out_json_slice,
         )
 
