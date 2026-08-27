@@ -90,9 +90,12 @@ kubectl create secret generic hf-secret \
 
 ---
 
-### Step 2: Deploy a Model via Kustomize
+### Step 2: Deploy / Spin Up a Model via Kustomize
 
-Deploy any model with a single command. The GKE Cluster Autoscaler will provision the required L4 GPU node on demand (~90s), and KEDA will automatically attach a `ScaledObject` to scale down to 0 when idle:
+To start your model server in the morning (or switch models), run `kubectl apply` for your target overlay. Running this command will spin up the GPU pod:
+
+> [!NOTE]
+> **KEDA 1-Hour Auto-Shutdown Safeguard**: KEDA monitors query activity. If the inference pod remains completely idle for **1 hour** (3,600s), KEDA will automatically scale it down to `0` replicas to prevent unnecessary GPU compute charges. Running `kubectl apply -k k8s/overlays/<model>/` in the morning will always spin it back up to 1 replica.
 
 #### A. Gemma 3 Models (1x L4 GPU)
 ```bash
