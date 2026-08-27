@@ -39,6 +39,7 @@ kubectl get nodes
 ```
 .
 ├── benchmarks/
+│   ├── capacity/               # vLLM capacity testing & saturation profiling
 │   └── tau2-bench/             # tau2 / tau3 benchmark framework
 ├── docker/
 │   ├── vllm/
@@ -65,6 +66,7 @@ kubectl get nodes
     │   ├── deepseek-r1-14b/     # DeepSeek-R1-Distill-Qwen-14B (2x L4)
     │   └── custom-lora/         # Custom LoRA adapter streamed via GCS FUSE
     └── jobs/                    # On-demand batch evaluation & training jobs
+        ├── capacity-test.yaml   # In-cluster capacity & saturation testing
         └── benchmark-tau2.yaml  # tau2-bench evaluation job
 ```
 
@@ -155,6 +157,30 @@ curl http://localhost:8000/v1/chat/completions \
     ]
   }'
 ```
+
+---
+
+## Capacity & Saturation Testing Guide
+
+Measure serving limits, TTFT, TPOT, KV cache memory occupancy, and find the optimal concurrency sweet spot ($C^*$) before running benchmarks:
+
+### Run an In-Cluster Capacity Sweep (Batch / GSM8K / MMLU):
+```bash
+# 1. Update benchmark ConfigMap
+kubectl create configmap capacity-benchmark-scripts \
+  --from-file=benchmark_capacity.py=benchmarks/capacity/benchmark_capacity.py \
+  --from-file=gsm8k.jsonl=benchmarks/capacity/datasets/gsm8k.jsonl \
+  --from-file=mmlu.jsonl=benchmarks/capacity/datasets/mmlu.jsonl \
+  -n inference --dry-run=client -o yaml | kubectl apply -f -
+
+# 2. Trigger capacity test job
+kubectl apply -f k8s/jobs/capacity-test.yaml
+
+# 3. Stream logs
+kubectl logs -f job/gemma3-capacity-test -c capacity-runner -n inference
+```
+
+See [benchmarks/capacity/README.md](benchmarks/capacity/README.md) for full documentation, workload presets, and empirical results for Gemma 3.
 
 ---
 

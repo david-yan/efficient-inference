@@ -1,0 +1,88 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gemma3-capacity-test
+  namespace: inference
+  labels:
+    app: gemma3-capacity-test
+spec:
+  ttlSecondsAfterFinished: 1200
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: gemma3-capacity-test
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      serviceAccountName: inference-ksa
+      restartPolicy: Never
+      tolerations:
+      - key: "cloud.google.com/gke-spot"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      containers:
+      - name: capacity-runner
+        image: python:3.11-slim
+        env:
+        - name: PROFILE
+          value: "batch"
+        - name: DATASET
+          value: "/benchmarks/gsm8k.jsonl"
+        - name: MODEL_NAME
+          value: "gemma-3-4b"
+        - name: ENDPOINT_URL
+          value: "http://vllm-service-gemma-3-4b:8000"
+        - name: OUTPUT_GCS_DIR
+          value: "/mnt/gcs/benchmarks/capacity"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          echo "=================================================="
+          echo "Starting Gemma 3 Capacity Testing Job"
+          echo "Workload Profile : ${PROFILE}"
+          echo "Dataset          : ${DATASET}"
+          echo "Target Endpoint  : ${ENDPOINT_URL}"
+          echo "Model Name       : ${MODEL_NAME}"
+          echo "=================================================="
+          
+          pip install --no-cache-dir aiohttp numpy tqdm
+          
+          OUTPUT_FILE="${OUTPUT_GCS_DIR}/gemma3_real_samples_$(date +%Y%m%d_%H%M%S).json"
+          mkdir -p "${OUTPUT_GCS_DIR}"
+          
+          python3 /benchmarks/benchmark_capacity.py \
+            --url "${ENDPOINT_URL}" \
+            --model "${MODEL_NAME}" \
+            --profile "${PROFILE}" \
+            --dataset "${DATASET}" \
+            --output-json "${OUTPUT_FILE}"
+          
+          echo "=================================================="
+          echo "Capacity benchmark run completed successfully."
+          echo "Results saved to ${OUTPUT_FILE}."
+          echo "=================================================="
+        resources:
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+        volumeMounts:
+        - name: gcs-storage
+          mountPath: /mnt/gcs
+        - name: benchmark-scripts
+          mountPath: /benchmarks
+      volumes:
+      - name: gcs-storage
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: efficient-inference-506713-models
+            mountOptions: "implicit-dirs"
+      - name: benchmark-scripts
+        configMap:
+          name: capacity-benchmark-scripts

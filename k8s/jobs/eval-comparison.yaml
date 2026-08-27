@@ -1,0 +1,99 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gemma3-eval-comparison
+  namespace: inference
+  labels:
+    app: gemma3-eval-comparison
+spec:
+  ttlSecondsAfterFinished: 1800
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: gemma3-eval-comparison
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      serviceAccountName: inference-ksa
+      restartPolicy: Never
+      tolerations:
+      - key: "cloud.google.com/gke-spot"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      containers:
+      - name: comparison-runner
+        image: python:3.11-slim
+        env:
+        - name: MODEL_NAME
+          value: "gemma-3-4b"
+        - name: ENDPOINT_URL
+          value: "http://vllm-service-gemma-3-4b:8000"
+        - name: GCS_OUTPUT_DIR
+          value: "/mnt/gcs/benchmarks/capacity/comparisons"
+        - name: CONCURRENCY_TIERS
+          value: "1 4 8 16 32 64 96 128 192 256"
+        - name: DATASETS
+          value: "gsm8k mmlu combined"
+        - name: CONCURRENCY_MULTIPLIER
+          value: "2"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          echo "=================================================="
+          echo "Starting Gemma 3 Multi-Eval Comparison Benchmark"
+          echo "Target Endpoint   : ${ENDPOINT_URL}"
+          echo "Model Name        : ${MODEL_NAME}"
+          echo "Concurrency Tiers : ${CONCURRENCY_TIERS}"
+          echo "Datasets          : ${DATASETS}"
+          echo "GCS Output Dir    : ${GCS_OUTPUT_DIR}"
+          echo "=================================================="
+          
+          pip install --no-cache-dir aiohttp numpy tqdm
+          
+          mkdir -p /tmp/eval_bench/datasets/raw /tmp/eval_bench/datasets/sorted "${GCS_OUTPUT_DIR}"
+          cp /benchmarks/benchmark_capacity.py /tmp/eval_bench/
+          cp /benchmarks/run_eval_comparison.py /tmp/eval_bench/
+          
+          # Copy datasets from GCS mount
+          cp -r /mnt/gcs/datasets/evals/raw/* /tmp/eval_bench/datasets/raw/
+          cp -r /mnt/gcs/datasets/evals/sorted/* /tmp/eval_bench/datasets/sorted/
+          
+          cd /tmp/eval_bench
+          
+          python3 run_eval_comparison.py \
+            --url "${ENDPOINT_URL}" \
+            --model "${MODEL_NAME}" \
+            --tiers ${CONCURRENCY_TIERS} \
+            --datasets ${DATASETS} \
+            --multiplier ${CONCURRENCY_MULTIPLIER} \
+            --output-dir "${GCS_OUTPUT_DIR}"
+          
+          echo "=================================================="
+          echo "Multi-Eval Comparison Benchmark completed!"
+          echo "Results saved to ${GCS_OUTPUT_DIR}."
+          echo "=================================================="
+        resources:
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+        volumeMounts:
+        - name: gcs-storage
+          mountPath: /mnt/gcs
+        - name: benchmark-scripts
+          mountPath: /benchmarks
+      volumes:
+      - name: gcs-storage
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: efficient-inference-506713-models
+            mountOptions: "implicit-dirs"
+      - name: benchmark-scripts
+        configMap:
+          name: capacity-benchmark-scripts
