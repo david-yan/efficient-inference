@@ -122,14 +122,41 @@ xychart-beta
 
 ---
 
-## 3. The True Saturation Knees ($C^*$)
+## 3. Key Architectural Findings & Saturation Knees ($C^*$)
 
-1. **GSM8K Math Reasoning**:
+### 1. Zero-Shot Prefix Caching: Why `random_sample` vs `random_slice` Showed Minimal Difference
+* **16-Token Block Granularity**: vLLM Automatic Prefix Caching (APC) manages KV cache activations in discrete 16-token blocks (`block_size=16`). To achieve even a 1-block cache hit, two requests must share at least 16 identical tokens from the start of the prompt.
+* **Empirical Question Divergence**:
+  * **GSM8K Zero-Shot**: Prompts follow `"Question: {unique question}..."`. The shared prefix across questions is only `"Question: "` (10 chars / **~2 tokens**). Because distinct math questions diverge at token 3, **0 blocks (0 tokens)** are shared between different questions. Consequently, lexicographical sorting (`random_slice`) provides the exact same cache hit rate as uniform sampling (`random_sample`).
+  * **MMLU Zero-Shot**: Prompts grouped by subject share only the ~95-char subject header (**~22 tokens**), yielding at most **1 block (16 tokens)** out of ~150 prompt tokens.
+* **Combined Curve Divergence Explained**: In the combined evaluation, the divergence between `random_sample` and `random_slice` was driven by **workload composition**, not cache hits. Because `random_slice` selected contiguous windows from the sorted file, some tiers drew 100% GSM8K questions (long decode, ~200–10,000 tok/s) while other tiers drew 100% MMLU questions (short decode, high prefill throughput, ~50,000 tok/s). In contrast, `random_sample` drew a balanced ~50/50 mixture (~15,000 tok/s) across all tiers.
+
+---
+
+### 2. Zero-Shot vs. Few-Shot / Chain-of-Thought (CoT) Dynamics
+The benchmark harness supports runtime `--prompt-mode zero_shot` and `--prompt-mode few_shot` (or `cot`) formatting:
+
+| Mode | Shared Prompt Header | Token Length | Reused KV Blocks | Expected Cache Hit % |
+| :--- | :--- | :--- | :--- | :--- |
+| **Zero-Shot** | Raw question format | 2–22 tokens | 0–1 blocks | **Low (~15% baseline / multi-turn)** |
+| **Few-Shot (GSM8K 8-shot)** | Standard 8-shot CoT exemplars | ~650 tokens | **~40 blocks** | **High (>75–85%)** |
+| **Few-Shot (MMLU 5-shot)** | Standard 5-shot exemplars | ~250 tokens | **~15 blocks** | **High (>70–80%)** |
+
+Under Few-Shot / CoT, the initial request warms up the 40 shared blocks in GPU memory, allowing all subsequent concurrent and sequential requests to skip prefill compute for >80% of prompt tokens.
+
+---
+
+### 3. Hardware Saturation Knees ($C^*$) on NVIDIA L4 (24GB)
+
+1. **GSM8K Math Reasoning (Long Generation, ~256 tokens)**:
    - Reaches maximum throughput (**$\approx 9,300 - 9,600\text{ tok/s}$**) at **$C = 96$**.
-   - Beyond $C=96$, throughput plateaus while **TTFT jumps from $414\text{ ms} \rightarrow 2.1\text{ s}$ at $C=128$, and $17.5\text{ s}$ at $C=256$** due to scheduler queue backlog.
+   - Beyond $C=96$, throughput plateaus while **P50 TTFT jumps from $414\text{ ms} \rightarrow 2.1\text{ s}$ at $C=128$, and $17.5\text{ s}$ at $C=256$** due to scheduler queue backlog.
    - **Optimal Setting for GSM8K**: **$C^* = 96$**.
 
-2. **MMLU Classification**:
+2. **MMLU Classification (Short Generation, ~16 tokens)**:
    - Reaches peak throughput (**$\approx 48,000 - 52,000\text{ tok/s}$**) at **$C = 96 - 128$**.
-   - At $C=128$, TTFT is well-controlled ($1.05\text{ s}$), and GPU peak KV cache occupancy is only $14.4\%$.
+   - At $C=128$, P50 TTFT is well-controlled ($1.05\text{ s}$), and GPU peak KV cache occupancy is only $14.4\%$.
    - **Optimal Setting for MMLU**: **$C^* = 128$**.
+
+3. **KV Cache Headroom**:
+   - Peak GPU KV cache occupancy remained under $35\%$ across all zero-shot tiers, confirming zero risk of CUDA OOM on Gemma 3 4B on the 24GB L4 GPU.
