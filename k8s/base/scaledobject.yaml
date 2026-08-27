@@ -9,12 +9,13 @@ spec:
     name: vllm-server
   minReplicaCount: 0
   maxReplicaCount: 2
-  cooldownPeriod: 600
+  cooldownPeriod: 600 # 10 minutes of idle traffic before scaling down to 0
   pollingInterval: 15
   triggers:
   - type: prometheus
     metadata:
-      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      serverAddress: http://frontend.default.svc.cluster.local:9090
       metricName: vllm_num_requests_waiting
-      query: sum(vllm:num_requests_waiting{namespace="inference"}) or vector(0)
+      query: sum(vllm_num_requests_waiting)
       threshold: '1'
+      ignoreNullValues: "true"
