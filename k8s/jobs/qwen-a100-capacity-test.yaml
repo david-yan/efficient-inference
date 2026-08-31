@@ -1,0 +1,92 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen-a100-capacity-test
+  namespace: inference
+  labels:
+    app: qwen-a100-capacity-test
+spec:
+  ttlSecondsAfterFinished: 1800
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: qwen-a100-capacity-test
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      serviceAccountName: inference-ksa
+      restartPolicy: Never
+      tolerations:
+      - key: "cloud.google.com/gke-spot"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      containers:
+      - name: capacity-runner
+        image: python:3.11-slim
+        env:
+        - name: PROFILE
+          value: "batch"
+        - name: DATASET
+          value: "/benchmarks/gsm8k.jsonl"
+        - name: MODEL_NAME
+          value: "qwen-3.8-27b"
+        - name: ENDPOINT_URL
+          value: "http://vllm-service-qwen-3-8-27b-a100:8000"
+        - name: CONCURRENCY_TIERS
+          value: "1 2 4 8 16 32 48 64"
+        - name: OUTPUT_GCS_DIR
+          value: "/mnt/gcs/benchmarks/capacity"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          echo "=================================================="
+          echo "Starting Qwen 3.8 27B (A100) Capacity Testing Job"
+          echo "Workload Profile : ${PROFILE}"
+          echo "Dataset          : ${DATASET}"
+          echo "Target Endpoint  : ${ENDPOINT_URL}"
+          echo "Model Name       : ${MODEL_NAME}"
+          echo "Concurrency Tiers: ${CONCURRENCY_TIERS}"
+          echo "=================================================="
+          
+          pip install --no-cache-dir aiohttp numpy tqdm
+          
+          OUTPUT_FILE="${OUTPUT_GCS_DIR}/qwen_3_8_27b_a100_$(date +%Y%m%d_%H%M%S).json"
+          mkdir -p "${OUTPUT_GCS_DIR}"
+          
+          python3 /benchmarks/benchmark_capacity.py \
+            --url "${ENDPOINT_URL}" \
+            --model "${MODEL_NAME}" \
+            --profile "${PROFILE}" \
+            --dataset "${DATASET}" \
+            --concurrency-tiers ${CONCURRENCY_TIERS} \
+            --output-json "${OUTPUT_FILE}"
+          
+          echo "=================================================="
+          echo "Capacity benchmark run completed successfully."
+          echo "Results saved to ${OUTPUT_FILE}."
+          echo "=================================================="
+        resources:
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+        volumeMounts:
+        - name: gcs-storage
+          mountPath: /mnt/gcs
+        - name: benchmark-scripts
+          mountPath: /benchmarks
+      volumes:
+      - name: gcs-storage
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: efficient-inference-506713-models
+            mountOptions: "implicit-dirs"
+      - name: benchmark-scripts
+        configMap:
+          name: capacity-benchmark-scripts

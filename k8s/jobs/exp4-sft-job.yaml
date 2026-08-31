@@ -1,0 +1,118 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: exp4-sft-run
+  namespace: inference
+  labels:
+    app: exp4-sft-runner
+spec:
+  ttlSecondsAfterFinished: 1800
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: exp4-sft-runner
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      serviceAccountName: inference-ksa
+      restartPolicy: Never
+      tolerations:
+      - key: "cloud.google.com/gke-spot"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      containers:
+      - name: exp4-runner
+        image: python:3.11-slim
+        env:
+        - name: DOMAIN
+          value: "airline,retail"
+        - name: CONCURRENCY_TIERS
+          value: "96"
+        - name: NUM_TASKS
+          value: "192"
+        - name: TASK_TIMEOUT
+          value: "120"
+        - name: URL_AGENT
+          value: "http://vllm-service-gemma-3-4b-sft:8000/v1"
+        - name: URL_USER
+          value: "http://vllm-service-gemma-3-4b-2:8000/v1"
+        - name: AGENT_LLM
+          value: "openai/gemma_sft"
+        - name: GCS_OUTPUT_DIR
+          value: "/mnt/gcs/benchmarks/capacity/exp4_sft"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          echo "=================================================="
+          echo "Starting Experiment 4: SFT LoRA Job (Dual-Node C*=96)"
+          echo "=================================================="
+
+          apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+          pip install --no-cache-dir rich fastapi uvicorn psutil typer toml addict tenacity docstring-parser deepdiff aiohttp numpy litellm pydantic pandas loguru tabulate requests python-dotenv pyyaml httpx
+
+          mkdir -p /tmp/tau_bench /tmp/tau_bench/data/tau2/domains ${GCS_OUTPUT_DIR}
+          base64 -d /tau2_pkg/tau2_core.tar.gz.b64 | tar -xz -C /tmp/tau_bench/
+          base64 -d /tau2_data/airline_data.tar.gz.b64 | tar -xz -C /tmp/tau_bench/data/tau2/domains/
+          base64 -d /tau2_data_retail/retail_data.tar.gz.b64 | tar -xz -C /tmp/tau_bench/data/tau2/domains/
+          cp /benchmarks/*.py /tmp/tau_bench/
+
+          touch /tmp/tau_bench/README.md
+          export PYTHONPATH=/tmp/tau_bench/src:$PYTHONPATH
+          export TAU2_DATA_DIR=/tmp/tau_bench/data
+          export OPENAI_API_KEY="EMPTY"
+          export OPENAI_API_BASE="${URL_AGENT}"
+
+          cd /tmp/tau_bench
+          python3 run_exp4_sft.py \
+            --domain "${DOMAIN}" \
+            --agent-llm "${AGENT_LLM}" \
+            --tiers ${CONCURRENCY_TIERS} \
+            --num-tasks ${NUM_TASKS} \
+            --task-timeout ${TASK_TIMEOUT} \
+            --url-agent "${URL_AGENT}" \
+            --url-user "${URL_USER}" \
+            --output-dir "${GCS_OUTPUT_DIR}"
+
+          echo "=================================================="
+          echo "Experiment 4 completed! Results saved to ${GCS_OUTPUT_DIR}"
+          echo "=================================================="
+        resources:
+          limits:
+            cpu: "4000m"
+            memory: "8Gi"
+          requests:
+            cpu: "2000m"
+            memory: "4Gi"
+        volumeMounts:
+        - name: gcs-storage
+          mountPath: /mnt/gcs
+        - name: benchmark-scripts
+          mountPath: /benchmarks
+        - name: tau2-pkg-vol
+          mountPath: /tau2_pkg
+        - name: tau2-data-vol
+          mountPath: /tau2_data
+        - name: tau2-data-retail-vol
+          mountPath: /tau2_data_retail
+      volumes:
+      - name: gcs-storage
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: efficient-inference-506713-models
+            mountOptions: "implicit-dirs"
+      - name: benchmark-scripts
+        configMap:
+          name: tau-capacity-scripts
+      - name: tau2-pkg-vol
+        configMap:
+          name: tau2-core-pkg
+      - name: tau2-data-vol
+        configMap:
+          name: tau2-data-airline-pkg
+      - name: tau2-data-retail-vol
+        configMap:
+          name: tau2-data-retail-pkg

@@ -18,6 +18,7 @@ spec:
       annotations:
         gke-gcsfuse/volumes: "true"
     spec:
+      enableServiceLinks: false
       serviceAccountName: inference-ksa
       tolerations:
       - key: "nvidia.com/gpu"
