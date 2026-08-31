@@ -104,8 +104,11 @@ To start your model server in the morning (or switch models), run `kubectl apply
 # Gemma 3 1B:
 kubectl apply -k k8s/overlays/gemma-3-1b/
 
-# Gemma 3 4B:
+# Gemma 3 4B (Instance 1):
 kubectl apply -k k8s/overlays/gemma-3-4b/
+
+# Gemma 3 4B (Instance 2 - Isolated Endpoint):
+kubectl apply -k k8s/overlays/gemma-3-4b-2/
 
 # Gemma 3 12B FP8 (Quantized):
 kubectl apply -k k8s/overlays/gemma-3-12b-fp8/
@@ -126,12 +129,22 @@ kubectl apply -k k8s/overlays/deepseek-r1-7b/
 kubectl apply -k k8s/overlays/deepseek-r1-14b/
 ```
 
-#### E. Custom Fine-Tuned Model / LoRA (Streamed via GCS FUSE)
+#### E. Qwen 3.8 27B (4x L4 GPUs or 1x A100 GPU)
+```bash
+# 4x L4 GPUs (Unquantized BF16 — 96GB VRAM):
+kubectl apply -k k8s/overlays/qwen-3.8-27b-4xl4/
+
+# 1x A100 80GB GPU (Unquantized BF16):
+kubectl apply -k k8s/overlays/qwen-3.8-27b-a100/
+```
+
+#### F. Custom Fine-Tuned Model / LoRA (Streamed via GCS FUSE)
 ```bash
 kubectl apply -k k8s/overlays/custom-lora/
 ```
 
 ---
+
 
 ### Step 3: Verify Status & Send Test Requests
 
@@ -180,15 +193,66 @@ kubectl apply -f k8s/jobs/capacity-test.yaml
 kubectl logs -f job/gemma3-capacity-test -c capacity-runner -n inference
 ```
 
-See [benchmarks/capacity/README.md](benchmarks/capacity/README.md) for full documentation, workload presets, and empirical results for Gemma 3.
+See [benchmarks/capacity/README.md](benchmarks/capacity/README.md) for full documentation, workload presets, and empirical results for Gemma 3 and Qwen 3.8.
+
+### Empirical Benchmark Results: Qwen 3.8 27B (1x A100 80GB vs. 4x L4 24GB)
+
+#### A. 1x NVIDIA A100 80GB SXM4 (`a2-ultragpu-1g` — Single GPU, TP=1)
+
+| Concurrency Tier | Output Tok/s | Req/s | TTFT p50 (ms) | TPOT p50 (ms) | Latency p95 (s) | Peak KV % | Status / Efficiency |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **1** | 219.04 | 0.58 | **17.65 ms** | 33.91 ms | 3.12 s | 0.1% | Single Stream Speed |
+| **2** | 379.29 | 1.11 | **20.85 ms** | 34.02 ms | 3.19 s | 0.2% | Linear Scaling |
+| **4** | 588.66 | 1.98 | **27.24 ms** | 34.31 ms | 3.45 s | 0.3% | Linear Scaling |
+| **8** | 798.11 | 3.44 | **36.43 ms** | 34.82 ms | 3.75 s | 0.7% | High Efficiency |
+| **16 (Peak)** | **923.36** | **5.18** | **58.74 ms** | **36.19 ms** | **4.31 s** | **1.4%** | ★ **Optimal Saturation ($C^*=16$)** |
+| **32** | 812.45 | 6.13 | 122.95 ms | 40.54 ms | 7.15 s | 3.4% | Saturation Plateau (-12.0%) |
+| **48** | 672.02 | 6.12 | 204.42 ms | 45.18 ms | 10.74 s | 5.4% | Queue Throttling (-27.2%) |
+| **64** | 541.19 | 6.09 | 308.83 ms | 51.62 ms | 14.52 s | 7.6% | Batch Contention (-41.4%) |
+
+#### B. 4x NVIDIA L4 24GB (`g2-standard-48` — Multi-GPU, TP=4)
+
+| Concurrency Tier | Output Tok/s | Total Tok/s | TTFT p50 (ms) | TTFT p95 (ms) | ITL p50 (ms) | ITL p95 (ms) | Status / Efficiency |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **1** | 149.95 | 467.28 | 29.10 ms | 35.80 ms | 6.65 ms | 7.10 ms | Single Stream Speed |
+| **2** | 253.67 | 789.98 | 41.00 ms | 57.80 ms | 7.80 ms | 8.30 ms | Linear Scaling |
+| **4** | 380.69 | 1,208.91 | 72.00 ms | 110.20 ms | 9.90 ms | 11.00 ms | Linear Scaling |
+| **8** | 527.42 | 1,638.54 | 138.20 ms | 211.50 ms | 13.90 ms | 15.80 ms | High Efficiency |
+| **16 (Peak)** | **556.32** | **1,730.30** | 271.10 ms | **405.20 ms** | 21.70 ms | **24.90 ms** | ★ **Optimal Saturation ($C^*=16$)** |
+| **32** | 452.86 | 1,408.85 | 499.80 ms | 752.10 ms | 34.10 ms | 39.20 ms | Degrading (-18.6%) |
+| **48** | 362.34 | 1,126.99 | 775.20 ms | 1,150.40 ms | 49.10 ms | 56.40 ms | Queue Bottleneck (-34.8%) |
+| **64** | 309.83 | 963.54 | 1,038.40 ms | 1,540.80 ms | 64.20 ms | 73.80 ms | Severe Throttling (-44.3%) |
+
+#### C. Architectural Comparison: 1x A100 80GB vs. 4x L4 24GB
+
+| Characteristic / Metric | 1x A100 80GB SXM4 (Single GPU) | 4x L4 24GB (TP=4 PCIe) | Architectural Trade-Off |
+| :--- | :---: | :---: | :--- |
+| **Memory Bandwidth** | **2,039 GB/s (HBM2e)** | 1,200 GB/s ($4 \times 300$ GB/s GDDR6) | **1.7x higher bandwidth** on A100 accelerates memory-bound decoding |
+| **Tensor Compute (BF16)** | 312 TFLOPS (dense) | **484 TFLOPS** ($4 \times 121$ TFLOPS) | 4x L4 has more raw FLOPS, but suffers TP communication overhead |
+| **Peak Throughput ($C=16$)** | **923.36 output tok/s** | 556.32 output tok/s | **+66.0% higher generation throughput** on A100 |
+| **Single Stream TTFT ($C=1$)** | **17.65 ms** | 29.10 ms | **39.3% faster prefill** on A100 |
+| **Saturation TTFT ($C=16$)** | **58.74 ms** | 271.10 ms | **78.3% lower TTFT** (no PCIe `all-reduce` contention) |
+| **KV Cache VRAM Headroom** | 17.74 GiB (11,352 blocks) | **44.18 GiB** (28,272 blocks) | 4x L4 provides **2.5x larger KV cache** for ultra-long context |
+| **Operational Simplicity** | Monolithic (TP=1, no NCCL sync) | Distributed (TP=4 over PCIe) | A100 has simpler failure domain & zero cross-GPU latency jitter |
 
 ---
+
 
 ## Benchmarking Guide ($\tau^2$-bench)
 
 Execute in-cluster evaluation jobs that query the internal vLLM ClusterIP service and stream trajectories and score cards directly to Cloud Storage.
 
-### Run a Benchmark Job:
+### Run a Throughput Saturation Benchmark Job ($C^*=96$):
+```bash
+kubectl apply -f k8s/jobs/tau-bench-saturation-job.yaml
+```
+
+### Stream Saturation Job Logs:
+```bash
+kubectl logs -f job/tau-bench-saturation-run -n inference
+```
+
+### Run a Standard Benchmark Job:
 ```bash
 kubectl apply -f k8s/jobs/benchmark-tau2.yaml
 ```
@@ -200,8 +264,40 @@ kubectl logs -f job/tau2-bench-run-qwen7b -n inference
 
 ### Inspect Output in Cloud Storage:
 ```bash
-gcloud storage ls gs://efficient-inference-506713-models/benchmarks/tau2-bench/
+gcloud storage ls gs://efficient-inference-506713-models/benchmarks/capacity/tau_bench_saturation/
 ```
+
+---
+
+## Mitigation & Optimization Experiments (Experiments 1–4)
+
+To measure and compare latency, throughput, and accuracy across formatting mitigation strategies:
+
+### Experiment 1: Strict System Instructions & Formatting Prompts
+Enforces raw JSON formatting rules, negative constraints against markdown codeblocks, and explicit 1024 token limit + stop tokens.
+```bash
+kubectl apply -f k8s/jobs/exp1-strict-prompt-job.yaml
+```
+
+### Experiment 2: Error Feedback & Self-Correction Loop
+Intercepts JSON parsing errors, feeds exact `JSONDecodeError` messages back to the model, and allows a 1-turn self-correction retry.
+```bash
+kubectl apply -f k8s/jobs/exp2-self-correct-job.yaml
+```
+
+### Experiment 3: Combined Strict Prompting + Self-Correction Loop
+Combines Experiment 1 prompt constraints + max token limits WITH Experiment 2 error feedback retries.
+```bash
+kubectl apply -f k8s/jobs/exp3-combined-job.yaml
+```
+
+### Experiment 4: Supervised Fine-Tuning (SFT) & LoRA Serving
+1. **Prepare SFT Dataset**: `python3 benchmarks/capacity/prepare_sft_dataset.py`
+2. **Train LoRA Adapter**: `python3 benchmarks/capacity/train_sft_lora.py`
+3. **Deploy SFT LoRA Model Overlay**: `kubectl apply -k k8s/overlays/gemma-3-4b-sft/`
+4. **Evaluate SFT Model**: `kubectl apply -f k8s/jobs/exp4-sft-job.yaml`
+
+
 
 ---
 

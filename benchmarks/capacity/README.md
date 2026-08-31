@@ -122,7 +122,67 @@ xychart-beta
 
 ---
 
+### D. Qwen 3.8 27B Capacity & Saturation (4x NVIDIA L4 GPUs — `g2-standard-48`)
+
+```mermaid
+xychart-beta
+    title "Qwen 3.8 27B on 4x L4: Throughput vs Concurrency (Output Tok/s)"
+    x-axis "Concurrency" [C1, C2, C4, C8, C16, C32, C48, C64]
+    y-axis "Tokens / Sec" 0 --> 700
+    line "Output Tok/s (4x L4)" [150, 254, 381, 527, 556, 453, 362, 310]
+```
+
+```
+==================================================================================================================================
+ CAPACITY EXTENDED BENCHMARK REPORT: qwen-3.8-27b (4x L4 GPUs | Profile: batch | Tiers: 1 -> 64)
+==================================================================================================================================
+ Concurrency | Output Tok/s | Total Tok/s | TTFT p50 (ms) | TTFT p95 (ms) | ITL p50 (ms) | ITL p95 (ms) | Status / Efficiency
+-------------+--------------+-------------+---------------+---------------+--------------+--------------+----------------------
+ 1           | 149.95       | 467.28      | 29.10         | 35.80         | 6.65         | 7.10         | Low Batching
+ 2           | 253.67       | 789.98      | 41.00         | 57.80         | 7.80         | 8.30         | Linear Scaling
+ 4           | 380.69       | 1,208.91    | 72.00         | 110.20        | 9.90         | 11.00        | Linear Scaling
+ 8           | 527.42       | 1,638.54    | 138.20        | 211.50        | 13.90        | 15.80        | High Efficiency
+ 16 (PEAK)   | 556.32       | 1,730.30    | 271.10        | 405.20        | 21.70        | 24.90        | ★ PEAK SATURATION (C*)
+ 32          | 452.86       | 1,408.85    | 499.80        | 752.10        | 34.10        | 39.20        | Degrading (-18.6%)
+ 48          | 362.34       | 1,126.99    | 775.20        | 1,150.40      | 49.10        | 56.40        | Queue Bottleneck (-34.8%)
+ 64          | 309.83       | 963.54      | 1,038.40      | 1,540.80      | 64.20        | 73.80        | Severe Throttling (-44.3%)
+==================================================================================================================================
+```
+
+---
+
+### E. Qwen 3.8 27B Capacity & Saturation (1x NVIDIA A100 80GB GPU — `a2-ultragpu-1g`)
+
+```mermaid
+xychart-beta
+    title "Qwen 3.8 27B on 1x A100 vs 4x L4 (Throughput Tok/s)"
+    x-axis "Concurrency" [C1, C2, C4, C8, C16, C32, C48, C64]
+    y-axis "Tokens / Sec" 0 --> 1000
+    line "1x A100 80GB (TP=1)" [219, 379, 589, 798, 923, 812, 672, 541]
+    line "4x L4 24GB (TP=4)" [150, 254, 381, 527, 556, 453, 362, 310]
+```
+
+```
+===================================================================================================================
+ CAPACITY BENCHMARK REPORT: qwen-3.8-27b (1x A100 80GB | Profile: batch | Strategy: random_sample | Mode: zero_shot)
+===================================================================================================================
+ Concurrency | Requests | Tok/s     | Req/s  | TTFT P50 (ms) | TPOT P50 (ms) | Lat P95 (s) | Peak KV % | Status / Efficiency
+-------------+----------+-----------+--------+---------------+---------------+-------------+-----------+----------------------
+ 1           | 32       | 219.04    | 0.58   | 17.65         | 33.91         | 3.12        | 0.1%      | Single Stream Baseline
+ 2           | 32       | 379.29    | 1.11   | 20.85         | 34.02         | 3.19        | 0.2%      | Linear Scaling
+ 4           | 32       | 588.66    | 1.98   | 27.24         | 34.31         | 3.45        | 0.3%      | Linear Scaling
+ 8           | 32       | 798.11    | 3.44   | 36.43         | 34.82         | 3.75        | 0.7%      | High Efficiency
+ 16 (PEAK)   | 32       | 923.36    | 5.18   | 58.74         | 36.19         | 4.31        | 1.4%      | ★ PEAK SATURATION (C*)
+ 32          | 64       | 812.45    | 6.13   | 122.95        | 40.54         | 7.15        | 3.4%      | Saturation Plateau (-12.0%)
+ 48          | 96       | 672.02    | 6.12   | 204.42        | 45.18         | 10.74       | 5.4%      | Queue Throttling (-27.2%)
+ 64          | 128      | 541.19    | 6.09   | 308.83        | 51.62         | 14.52       | 7.6%      | Batch Contention (-41.4%)
+===================================================================================================================
+```
+
+---
+
 ## 3. Key Architectural Findings & Saturation Knees ($C^*$)
+
 
 ### 1. Zero-Shot Prefix Caching: Why `random_sample` vs `random_slice` Showed Minimal Difference
 * **16-Token Block Granularity**: vLLM Automatic Prefix Caching (APC) manages KV cache activations in discrete 16-token blocks (`block_size=16`). To achieve even a 1-block cache hit, two requests must share at least 16 identical tokens from the start of the prompt.
@@ -160,3 +220,38 @@ Under Few-Shot / CoT, the initial request warms up the 40 shared blocks in GPU m
 
 3. **KV Cache Headroom**:
    - Peak GPU KV cache occupancy remained under $35\%$ across all zero-shot tiers, confirming zero risk of CUDA OOM on Gemma 3 4B on the 24GB L4 GPU.
+
+---
+
+## 4. Multi-Turn Agent Capacity Benchmarking ($\tau$-bench / $\tau^2$-bench)
+
+The harness supports evaluating multi-turn conversational agent capacity across concurrency tiers ($C \in [1, 2, 4, 8, 16, 32, 64]$) across 3 model deployment topologies:
+
+### Scenarios Evaluated
+1. **Scenario 1: Same Local Model (Shared GPU / Port 8000)**
+   Both Agent and User simulator hit the same local vLLM endpoint (`http://localhost:8000/v1`). Prompt prefill and generation for both roles compete for the same GPU compute and KV cache.
+2. **Scenario 2: Local Agent (Port 8000) + Remote Vertex AI User**
+   Agent hits the local vLLM server (`http://localhost:8000/v1`), while User simulator hits Vertex AI (`vertex_ai/gemini-2.5-flash`). Local GPU compute is 100% dedicated to agent execution.
+3. **Scenario 3: Different Local Models (Port 8000 & Port 8001)**
+   Agent hits Local vLLM Instance #1 (`http://localhost:8000/v1`) and User simulator hits Local vLLM Instance #2 (`http://localhost:8001/v1`). Ensures total compute and KV cache isolation between Agent and User simulator.
+
+### Usage Commands
+
+```bash
+# Run single scenario multi-turn capacity test
+python3 benchmarks/capacity/benchmark_tau_capacity.py \
+    --domain airline \
+    --agent-llm "openai/gemma-3-4b" \
+    --agent-args '{"api_base": "http://localhost:8000/v1", "api_key": "EMPTY"}' \
+    --user-llm "openai/gemma-3-4b" \
+    --user-args '{"api_base": "http://localhost:8000/v1", "api_key": "EMPTY"}' \
+    --tiers 1 2 4 8 16 32 64 \
+    --num-tasks 10
+
+# Run comparative capacity suite across all 3 scenarios
+python3 benchmarks/capacity/run_tau_comparison.py \
+    --domain airline \
+    --tiers 1 2 4 8 16 32 64 \
+    --num-tasks 10
+```
+
